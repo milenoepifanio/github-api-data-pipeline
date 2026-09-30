@@ -1,5 +1,6 @@
 from src.api.client import GitHubClient
 from src.api.pagination import GitHubPaginator
+from src.ingestion.issues import IssuesIngestion
 
 
 client = GitHubClient()
@@ -9,21 +10,24 @@ paginator = GitHubPaginator(
     per_page=5
 )
 
-pages = paginator.paginate(
-    endpoint="/repos/microsoft/vscode/issues",
+issues_ingestion = IssuesIngestion(
+    paginator=paginator
+)
+
+issues = issues_ingestion.get_issues(
+    owner="milenoepifanio",
+    repository="github-api-data-pipeline",
     params={
-        "state": "open"
+        "state": "all"
     }
 )
 
-for page_number, page in enumerate(
-    pages,
-    start=1
-):
-    print(
-        f"Page {page_number}: "
-        f"{len(page)} records"
-    )
+print("=== ISSUES ===")
+print(f"Total: {len(issues)}")
 
-    if page_number == 3:
-        break
+for issue in issues[:5]:
+    print(
+        f"#{issue['number']} - "
+        f"{issue['state']} - "
+        f"{issue['title']}"
+    )

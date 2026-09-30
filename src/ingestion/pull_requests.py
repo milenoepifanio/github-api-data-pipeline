@@ -3,9 +3,9 @@ from typing import Any
 from src.api.pagination import GitHubPaginator
 
 
-class CommitsIngestion:
+class PullRequestsIngestion:
     """
-    Handles commit data ingestion from the GitHub REST API.
+    Handles pull request data ingestion from the GitHub REST API.
     """
 
     def __init__(
@@ -14,14 +14,14 @@ class CommitsIngestion:
     ) -> None:
         self.paginator = paginator
 
-    def get_commits(
+    def get_pull_requests(
         self,
         owner: str,
         repository: str,
         params: dict[str, Any] = None
     ) -> list[dict[str, Any]]:
         """
-        Retrieves commits from a specific GitHub repository.
+        Retrieves pull requests from a specific GitHub repository.
 
         Args:
             owner: Repository owner.
@@ -29,11 +29,11 @@ class CommitsIngestion:
             params: Optional query parameters.
 
         Returns:
-            list[dict[str, Any]]: Commits returned by GitHub.
+            list[dict[str, Any]]: Pull requests returned by GitHub.
         """
-        endpoint = f"/repos/{owner}/{repository}/commits"
+        endpoint = f"/repos/{owner}/{repository}/pulls"
 
-        commits = []
+        pull_requests = []
 
         pages = self.paginator.paginate(
             endpoint=endpoint,
@@ -41,6 +41,6 @@ class CommitsIngestion:
         )
 
         for page in pages:
-            commits.extend(page)
+            pull_requests.extend(page)
 
-        return commits
+        return pull_requests

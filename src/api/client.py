@@ -2,10 +2,9 @@ import os
 from typing import Any, Optional
 
 import requests
+
 from dotenv import load_dotenv
-
 from src.api.auth import get_auth_headers
-
 
 load_dotenv()
 
