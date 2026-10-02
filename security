@@ -1,0 +1,147 @@
+# Política de Segurança
+
+## 1. Objetivo
+
+Este documento apresenta as principais diretrizes de segurança adotadas no projeto.
+
+Como o pipeline realiza comunicação autenticada com a GitHub REST API, o gerenciamento adequado de credenciais e informações sensíveis é essencial.
+
+---
+
+## 2. Credenciais
+
+O projeto utiliza GitHub Personal Access Token para autenticação.
+
+O token deve ser configurado exclusivamente por variável de ambiente.
+
+Exemplo:
+
+```env id="qufsd1"
+GITHUB_TOKEN=seu_token
+```
+
+O arquivo `.env` utilizado localmente não deve ser versionado.
+
+O repositório disponibiliza apenas:
+
+```text id="jxwjhk"
+.env.example
+```
+
+sem credenciais reais.
+
+---
+
+## 3. Informações que Não Devem Ser Versionadas
+
+Nunca devem ser adicionados ao repositório:
+
+- Personal Access Tokens;
+- senhas;
+- arquivos `.env` contendo credenciais;
+- chaves privadas;
+- arquivos de credenciais;
+- secrets;
+- dados pessoais ou sensíveis;
+- informações confidenciais.
+
+O `.gitignore` deve ser utilizado como uma camada adicional de proteção, mas não substitui a revisão das alterações antes de cada commit.
+
+---
+
+## 4. Princípio do Menor Privilégio
+
+Tokens utilizados no projeto devem possuir apenas as permissões necessárias para os endpoints consumidos.
+
+Sempre que possível, utilize tokens com:
+
+- escopo limitado;
+- acesso somente aos recursos necessários;
+- prazo de expiração definido;
+- permissões mínimas.
+
+---
+
+## 5. Logs
+
+Os logs do pipeline não devem armazenar:
+
+- tokens;
+- headers de autenticação;
+- senhas;
+- secrets;
+- outras credenciais.
+
+O cliente HTTP registra informações operacionais relacionadas a retries e falhas, como:
+
+```text id="gx7w4a"
+HTTP status
+número da tentativa
+tempo de espera
+tipo de falha
+```
+
+sem registrar o token utilizado na autenticação.
+
+---
+
+## 6. Dados da API
+
+Os dados retornados pela API devem ser tratados considerando seu nível de exposição.
+
+Antes de persistir informações nas camadas Raw ou Silver, deve-se avaliar se o payload contém informações que não devem ser publicadas ou versionadas.
+
+Os diretórios de dados gerados pelo pipeline não devem ser utilizados para armazenar credenciais.
+
+---
+
+## 7. Exposição Acidental de Credenciais
+
+Caso um token seja publicado acidentalmente:
+
+1. revogue imediatamente o token comprometido;
+2. gere uma nova credencial;
+3. atualize o ambiente local;
+4. remova a credencial do código ou arquivo responsável;
+5. avalie se a credencial permanece disponível no histórico do Git;
+6. revise possíveis utilizações indevidas da credencial.
+
+A simples exclusão do token em um commit posterior não garante sua remoção do histórico.
+
+---
+
+## 8. Relato de Vulnerabilidades
+
+Problemas de segurança não devem ser utilizados para expor publicamente tokens, credenciais ou informações sensíveis.
+
+Ao identificar uma vulnerabilidade, forneça informações suficientes para permitir sua reprodução e correção, evitando divulgar dados sensíveis durante o processo.
+
+---
+
+## 9. Responsabilidade
+
+Segurança deve ser considerada durante todo o ciclo do pipeline:
+
+```text id="z6bvi4"
+Configuração
+     |
+     v
+Autenticação
+     |
+     v
+Comunicação com API
+     |
+     v
+Logs
+     |
+     v
+Persistência Raw
+     |
+     v
+Processamento
+     |
+     v
+Silver
+```
+
+Novas funcionalidades devem preservar os princípios de proteção de credenciais, mínimo privilégio e ausência de informações sensíveis em código e logs.
