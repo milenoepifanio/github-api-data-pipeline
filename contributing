@@ -1,0 +1,215 @@
+# Guia de Contribuição
+
+Obrigado pelo interesse em contribuir com o projeto.
+
+Este repositório implementa um pipeline de Engenharia de Dados baseado na GitHub REST API, com foco em integração com Web APIs, resiliência, persistência, processamento e boas práticas de desenvolvimento.
+
+---
+
+## 1. Tipos de Contribuição
+
+Contribuições podem envolver:
+
+- correções de bugs;
+- melhorias no código;
+- novos endpoints ou recursos de ingestão;
+- melhorias na estratégia de retry e resiliência;
+- processamento e transformação de dados;
+- testes automatizados;
+- documentação;
+- melhorias relacionadas a logging e observabilidade;
+- melhorias na arquitetura do pipeline.
+
+---
+
+## 2. Preparação do Ambiente
+
+Clone o repositório:
+
+```bash id="06ucqr"
+git clone https://github.com/milenoepifanio/github-api-data-pipeline.git
+```
+
+Entre no diretório:
+
+```bash id="hr7zsk"
+cd github-api-data-pipeline
+```
+
+Instale as dependências:
+
+```bash id="0g0jdu"
+pip install -r requirements.txt
+```
+
+Crie um arquivo `.env` baseado no `.env.example`.
+
+Exemplo:
+
+```env id="wuhz01"
+GITHUB_BASE_URL=https://api.github.com
+GITHUB_TOKEN=
+```
+
+Adicione seu GitHub Personal Access Token localmente.
+
+Nunca faça commit do arquivo `.env` ou de tokens de acesso.
+
+---
+
+## 3. Estrutura do Projeto
+
+A estrutura principal segue a separação de responsabilidades:
+
+```text id="ndbh3f"
+src/
+├── api/
+│   ├── auth.py
+│   ├── client.py
+│   └── pagination.py
+│
+├── ingestion/
+│   ├── repositories.py
+│   ├── commits.py
+│   ├── pull_requests.py
+│   └── issues.py
+│
+├── processing/
+├── storage/
+└── utils/
+```
+
+Ao adicionar funcionalidades, procure manter essa separação.
+
+---
+
+## 4. Desenvolvimento em Branches
+
+Evite realizar alterações diretamente na `main`.
+
+Crie uma branch específica para sua alteração.
+
+Exemplos:
+
+```bash id="qmtbbh"
+git switch -c feat/nova-funcionalidade
+```
+
+```bash id="ftw55z"
+git switch -c fix/correcao-client
+```
+
+```bash id="rr7dxp"
+git switch -c docs/atualizacao-documentacao
+```
+
+Prefixos recomendados:
+
+| Prefixo | Uso |
+|---|---|
+| `feat/` | Nova funcionalidade |
+| `fix/` | Correção |
+| `docs/` | Documentação |
+| `test/` | Testes |
+| `refactor/` | Refatoração |
+| `chore/` | Configuração ou manutenção |
+
+---
+
+## 5. Commits
+
+Utilize mensagens curtas e descritivas.
+
+Exemplos:
+
+```text id="dm1hpe"
+feat: adiciona persistência da camada raw
+```
+
+```text id="md1agf"
+fix: corrige tratamento de rate limit
+```
+
+```text id="y4onq4"
+test: adiciona testes de retry
+```
+
+```text id="b5qv0e"
+docs: documenta funcionamento do cliente HTTP
+```
+
+Evite commits muito grandes contendo alterações sem relação entre si.
+
+---
+
+## 6. Boas Práticas
+
+Antes de enviar uma contribuição:
+
+- verifique se o código executa corretamente;
+- mantenha funções e classes com responsabilidades claras;
+- utilize nomes descritivos;
+- evite duplicação de código;
+- documente comportamentos relevantes;
+- preserve a estrutura existente do projeto;
+- não exponha tokens ou outras credenciais;
+- adicione ou atualize testes quando necessário;
+- verifique se alterações não quebraram funcionalidades existentes.
+
+---
+
+## 7. Testes
+
+Alterações relacionadas ao cliente HTTP, retry, paginação ou processamento devem ser validadas antes do envio.
+
+Durante o desenvolvimento, testes de integração e resiliência podem ser executados a partir da raiz do projeto.
+
+Exemplo:
+
+```bash id="93ykox"
+python -m notebooks.test_api
+```
+
+A estrutura definitiva de testes automatizados será mantida no diretório:
+
+```text id="9hpkja"
+tests/
+```
+
+---
+
+## 8. Pull Requests
+
+Antes de abrir um Pull Request:
+
+1. confirme que a branch está atualizada;
+2. revise as alterações realizadas;
+3. execute os testes aplicáveis;
+4. confirme que nenhuma credencial foi adicionada;
+5. utilize um título claro;
+6. descreva o objetivo e as principais alterações realizadas.
+
+O Pull Request deve possuir escopo claro e evitar alterações não relacionadas à sua finalidade.
+
+---
+
+## 9. Segurança
+
+Nunca adicione ao repositório:
+
+- Personal Access Tokens;
+- senhas;
+- arquivos `.env`;
+- chaves privadas;
+- credenciais de serviços;
+- dados pessoais ou sensíveis.
+
+Caso uma credencial seja publicada acidentalmente, ela deve ser revogada imediatamente.
+
+Consulte também:
+
+```text id="aj3d5d"
+SECURITY.md
+```
+
+para informações relacionadas à segurança do projeto.
