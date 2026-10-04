@@ -1,33 +1,41 @@
 from src.api.client import GitHubClient
 from src.api.pagination import GitHubPaginator
-from src.ingestion.issues import IssuesIngestion
+
+from src.ingestion.commits import CommitsIngestion
+from src.storage.raw import RawStorage
 
 
 client = GitHubClient()
 
 paginator = GitHubPaginator(
-    client=client,
-    per_page=5
+    client=client
 )
 
-issues_ingestion = IssuesIngestion(
+commits_ingestion = CommitsIngestion(
     paginator=paginator
 )
 
-issues = issues_ingestion.get_issues(
-    owner="milenoepifanio",
-    repository="github-api-data-pipeline",
-    params={
-        "state": "all"
-    }
+raw_storage = RawStorage()
+
+
+owner = "milenoepifanio"
+repository = "github-api-data-pipeline"
+
+
+commits = commits_ingestion.get_commits(
+    owner=owner,
+    repository=repository
 )
 
-print("=== ISSUES ===")
-print(f"Total: {len(issues)}")
 
-for issue in issues[:5]:
-    print(
-        f"#{issue['number']} - "
-        f"{issue['state']} - "
-        f"{issue['title']}"
-    )
+output_path = raw_storage.save(
+    entity="commits",
+    data=commits,
+    owner=owner,
+    repository=repository
+)
+
+
+print("Raw file created:")
+print(output_path)
+print(f"Records: {len(commits)}")
