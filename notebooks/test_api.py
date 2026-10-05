@@ -1,6 +1,5 @@
 from src.api.client import GitHubClient
 from src.api.pagination import GitHubPaginator
-
 from src.ingestion.commits import CommitsIngestion
 from src.storage.raw import RawStorage
 
@@ -28,7 +27,7 @@ commits = commits_ingestion.get_commits(
 )
 
 
-output_path = raw_storage.save(
+json_path = raw_storage.save(
     entity="commits",
     data=commits,
     owner=owner,
@@ -36,6 +35,14 @@ output_path = raw_storage.save(
 )
 
 
-print("Raw file created:")
-print(output_path)
+parquet_path = raw_storage.save_commits_parquet(
+    data=commits,
+    owner=owner,
+    repository=repository
+)
+
+
+print("\n=== RAW PERSISTENCE ===")
+print(f"JSON: {json_path}")
+print(f"Parquet: {parquet_path}")
 print(f"Records: {len(commits)}")
