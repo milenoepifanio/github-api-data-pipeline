@@ -2,6 +2,7 @@
 import hashlib
 import json
 import os
+import time
 
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
@@ -15,6 +16,10 @@ from src.ingestion.issues import IssuesIngestion
 from src.ingestion.pull_requests import PullRequestsIngestion
 
 from src.storage.raw import RawStorage
+from src.utils.logger import get_logger
+
+
+logger = get_logger(__name__)
 
 
 class ResourcesPipeline:
@@ -34,6 +39,12 @@ class ResourcesPipeline:
         - Incremental ingestion
         - Timestamp-based checkpoints
         - Overlap window for recent records
+
+    Observability:
+        - Structured application logging
+        - Execution duration tracking
+        - Ingestion and persistence metrics
+        - Exception tracking
     """
 
     REPOSITORY_FIELDS = (
@@ -298,7 +309,12 @@ class ResourcesPipeline:
     ) -> None:
 
         if not records:
-            print(f"{entity}: no records to persist.")
+
+            logger.info(
+                "No records to persist | Entity=%s",
+                entity
+            )
+
             return
 
         repository_name = (
@@ -332,9 +348,26 @@ class ResourcesPipeline:
             repository=repository_name
         )
 
-        print(f"Records persisted: {len(records)}")
-        print(f"JSON: {json_path}")
-        print(f"Parquet: {parquet_path}")
+        logger.info(
+            "Raw persistence completed | "
+            "Entity=%s | Records=%d",
+            entity,
+            len(records)
+        )
+
+        logger.info(
+            "Raw JSON persisted | "
+            "Entity=%s | Path=%s",
+            entity,
+            json_path
+        )
+
+        logger.info(
+            "Raw Parquet persisted | "
+            "Entity=%s | Path=%s",
+            entity,
+            parquet_path
+        )
 
     # ==================================================
     # ATOMIC JSON PERSISTENCE
@@ -517,9 +550,9 @@ class ResourcesPipeline:
 
         if not snapshots:
 
-            print(
-                "No previous repository snapshot found. "
-                "Starting with an empty state."
+            logger.info(
+                "No previous repository snapshot found | "
+                "Starting with empty state"
             )
 
             return {}
@@ -540,9 +573,9 @@ class ResourcesPipeline:
                 "Previous repositories snapshot is invalid."
             )
 
-        print(
-            "Bootstrapping repository state from: "
-            f"{latest_snapshot}"
+        logger.info(
+            "Repository state bootstrapped | Snapshot=%s",
+            latest_snapshot
         )
 
         return self._build_repository_state(
@@ -753,8 +786,8 @@ class ResourcesPipeline:
 
         if not changes:
 
-            print(
-                "Repository changes detected: 0"
+            logger.info(
+                "Repository changes detected | Count=0"
             )
 
             return
@@ -794,9 +827,9 @@ class ResourcesPipeline:
                     f"{output_path}"
                 )
 
-            print(
-                "Repository change batch already exists: "
-                f"{output_path}"
+            logger.info(
+                "Repository event batch already exists | Path=%s",
+                output_path
             )
 
             return
@@ -817,12 +850,11 @@ class ResourcesPipeline:
             payload=events
         )
 
-        print(
-            f"Repository changes detected: {len(changes)}"
-        )
-
-        print(
-            f"Changes JSON: {output_path}"
+        logger.info(
+            "Repository changes persisted | "
+            "Count=%d | Path=%s",
+            len(changes),
+            output_path
         )
 
     # ==================================================
@@ -838,132 +870,160 @@ class ResourcesPipeline:
         snapshot and change events are persisted.
         """
 
-        print("\n=== REPOSITORIES ===")
+        start_time = time.perf_counter()
 
-        execution_datetime = datetime.now(
-            timezone.utc
+        logger.info(
+            "Repositories ingestion started | Owner=%s",
+            self.owner
         )
 
-        # 1. Load previous state.
-        previous_state = (
-            self._load_previous_repositories_state()
-        )
+        try:
 
-        # 2. Save initial baseline before the first
-        #    new snapshot, when no checkpoint exists.
-        if not self._repositories_state_path().exists():
+            execution_datetime = datetime.now(
+                timezone.utc
+            )
 
+            # 1. Load previous state.
+            previous_state = (
+                self._load_previous_repositories_state()
+            )
+
+            # 2. Save initial baseline before first snapshot.
+            if not self._repositories_state_path().exists():
+
+                self._save_repositories_state(
+                    state=previous_state,
+                    execution_datetime=execution_datetime
+                )
+
+                logger.info(
+                    "Initial repository baseline checkpoint saved"
+                )
+
+            # 3. Retrieve repositories from GitHub.
+            repositories = (
+                self.repositories_ingestion.get_repositories(
+                    params={
+                        "affiliation": "owner",
+                        "sort": "updated",
+                        "direction": "desc",
+                        "per_page": 100
+                    }
+                )
+            )
+
+            if not isinstance(repositories, list):
+                raise ValueError(
+                    "Repository ingestion must return a list."
+                )
+
+            retrieved_count = len(repositories)
+
+            logger.info(
+                "Repositories retrieved from API | Count=%d",
+                retrieved_count
+            )
+
+            # Empty response is treated as suspicious.
+            if not repositories:
+                raise ValueError(
+                    "Repository API returned an empty collection. "
+                    "Comparison aborted."
+                )
+
+            # 4. Build current repository state.
+            current_state = self._build_repository_state(
+                repositories
+            )
+
+            # 5. Detect changes.
+            changes = self._detect_repository_changes(
+                previous_state=previous_state,
+                current_state=current_state
+            )
+
+            # 6. Persist complete Raw snapshot.
+            self._persist(
+                entity="repositories",
+                records=repositories
+            )
+
+            # 7. Persist historical change events.
+            self._save_repository_changes(
+                changes=changes,
+                execution_datetime=execution_datetime,
+                previous_state=previous_state
+            )
+
+            # 8. Preserve missing repositories.
+            merged_state = self._merge_repository_states(
+                previous_state=previous_state,
+                current_state=current_state
+            )
+
+            # 9. Advance checkpoint after persistence.
             self._save_repositories_state(
-                state=previous_state,
+                state=merged_state,
                 execution_datetime=execution_datetime
             )
 
-            print(
-                "Initial repository baseline checkpoint saved."
+            logger.info(
+                "Repository state checkpoint updated | "
+                "Repositories=%d",
+                len(merged_state)
             )
 
-        # 3. Retrieve repositories from GitHub.
-        repositories = (
-            self.repositories_ingestion.get_repositories(
-                params={
-                    "affiliation": "owner",
-                    "sort": "updated",
-                    "direction": "desc",
-                    "per_page": 100
-                }
-            )
-        )
+            # 10. Summarize detected changes.
+            change_counts = {
+                change_type: sum(
+                    1
+                    for change in changes
+                    if change["change_type"] == change_type
+                )
+                for change_type in (
+                    "CREATED",
+                    "UPDATED",
+                    "MISSING",
+                    "RESTORED"
+                )
+            }
 
-        if not isinstance(repositories, list):
-            raise ValueError(
-                "Repository ingestion must return a list."
-            )
-
-        print(
-            f"Repositories retrieved: {len(repositories)}"
-        )
-
-        # An empty response is treated as suspicious.
-        # This avoids marking every known repository
-        # as MISSING because of an empty collection.
-        if not repositories:
-            raise ValueError(
-                "Repository API returned an empty collection. "
-                "Comparison aborted."
+            duration = (
+                time.perf_counter() - start_time
             )
 
-        # 4. Build the current repository state.
-        current_state = self._build_repository_state(
-            repositories
-        )
-
-        # 5. Detect differences.
-        changes = self._detect_repository_changes(
-            previous_state=previous_state,
-            current_state=current_state
-        )
-
-        # 6. Persist complete Raw snapshot.
-        #    A failure here stops checkpoint advancement.
-        self._persist(
-            entity="repositories",
-            records=repositories
-        )
-
-        # 7. Persist historical change events.
-        #    A failure here also stops checkpoint advancement.
-        self._save_repository_changes(
-            changes=changes,
-            execution_datetime=execution_datetime,
-            previous_state=previous_state
-        )
-
-        # 8. Preserve missing repositories.
-        merged_state = self._merge_repository_states(
-            previous_state=previous_state,
-            current_state=current_state
-        )
-
-        # 9. Advance checkpoint only after persistence.
-        self._save_repositories_state(
-            state=merged_state,
-            execution_datetime=execution_datetime
-        )
-
-        # 10. Summarize detected changes.
-        change_counts = {
-            change_type: sum(
-                1
-                for change in changes
-                if change["change_type"] == change_type
+            logger.info(
+                "Repositories ingestion completed | "
+                "Status=SUCCESS | "
+                "Retrieved=%d | "
+                "Created=%d | "
+                "Updated=%d | "
+                "Missing=%d | "
+                "Restored=%d | "
+                "Duration=%.2fs",
+                retrieved_count,
+                change_counts["CREATED"],
+                change_counts["UPDATED"],
+                change_counts["MISSING"],
+                change_counts["RESTORED"],
+                duration
             )
-            for change_type in (
-                "CREATED",
-                "UPDATED",
-                "MISSING",
-                "RESTORED"
+
+        except Exception:
+
+            duration = (
+                time.perf_counter() - start_time
             )
-        }
 
-        print(
-            f"Created: {change_counts['CREATED']}"
-        )
+            logger.exception(
+                "Repositories ingestion failed | "
+                "Status=FAILED | "
+                "Owner=%s | Duration=%.2fs",
+                self.owner,
+                duration
+            )
 
-        print(
-            f"Updated: {change_counts['UPDATED']}"
-        )
-
-        print(
-            f"Missing: {change_counts['MISSING']}"
-        )
-
-        print(
-            f"Restored: {change_counts['RESTORED']}"
-        )
-
-        print(
-            "Repository state checkpoint updated."
-        )
+            raise
 
     # ==================================================
     # ISSUES AND PULL REQUESTS
@@ -979,87 +1039,156 @@ class ResourcesPipeline:
         and Pull Requests.
         """
 
-        print(f"\n=== {entity.upper()} ===")
+        start_time = time.perf_counter()
 
-        checkpoint = self._load_checkpoint(
+        logger.info(
+            "Incremental ingestion started | Entity=%s",
             entity
         )
 
-        last_processed_at = (
-            checkpoint["last_processed_at"]
-        )
+        try:
 
-        params = {
-            "state": "all",
-            "sort": "updated",
-            "direction": "desc",
-            "per_page": 100
-        }
-
-        if last_processed_at and entity == "issues":
-
-            overlap_start = (
-                self._parse_datetime(last_processed_at)
-                - timedelta(seconds=60)
+            # 1. Load checkpoint.
+            checkpoint = self._load_checkpoint(
+                entity
             )
 
-            params["since"] = self._format_datetime(
-                overlap_start
+            last_processed_at = (
+                checkpoint["last_processed_at"]
             )
 
-        if last_processed_at:
+            params = {
+                "state": "all",
+                "sort": "updated",
+                "direction": "desc",
+                "per_page": 100
+            }
 
-            print(
-                f"Checkpoint: {last_processed_at}"
+            # 2. Configure overlap for Issues.
+            if last_processed_at and entity == "issues":
+
+                overlap_start = (
+                    self._parse_datetime(last_processed_at)
+                    - timedelta(seconds=60)
+                )
+
+                params["since"] = self._format_datetime(
+                    overlap_start
+                )
+
+            if last_processed_at:
+
+                logger.info(
+                    "Incremental checkpoint loaded | "
+                    "Entity=%s | Since=%s",
+                    entity,
+                    last_processed_at
+                )
+
+            else:
+
+                logger.info(
+                    "No checkpoint found | "
+                    "Entity=%s | Running full load",
+                    entity
+                )
+
+            # 3. Retrieve records.
+            records = ingestion_method(
+                owner=self.owner,
+                repository=self.repository,
+                params=params
             )
 
-        else:
+            retrieved_count = len(records)
 
-            print(
-                "No checkpoint found. Running full load."
+            logger.info(
+                "Records retrieved from API | "
+                "Entity=%s | Count=%d",
+                entity,
+                retrieved_count
             )
 
-        records = ingestion_method(
-            owner=self.owner,
-            repository=self.repository,
-            params=params
-        )
-
-        print(
-            f"Records retrieved from API: {len(records)}"
-        )
-
-        new_records = self._filter_incremental(
-            records=records,
-            checkpoint=checkpoint
-        )
-
-        print(
-            f"New or updated records: {len(new_records)}"
-        )
-
-        if not new_records:
-
-            print(
-                "No new records found."
+            # 4. Apply incremental filtering.
+            new_records = self._filter_incremental(
+                records=records,
+                checkpoint=checkpoint
             )
 
-            return
+            new_records_count = len(new_records)
 
-        self._persist(
-            entity=entity,
-            records=new_records
-        )
+            logger.info(
+                "Incremental records identified | "
+                "Entity=%s | Count=%d",
+                entity,
+                new_records_count
+            )
 
-        self._update_checkpoint(
-            entity=entity,
-            records=new_records,
-            previous_checkpoint=checkpoint
-        )
+            # 5. Skip persistence if no changes.
+            if not new_records:
 
-        print(
-            "Checkpoint updated successfully."
-        )
+                duration = (
+                    time.perf_counter() - start_time
+                )
+
+                logger.info(
+                    "Incremental ingestion completed | "
+                    "Entity=%s | Status=SUCCESS | "
+                    "Persisted=0 | Duration=%.2fs",
+                    entity,
+                    duration
+                )
+
+                return
+
+            # 6. Persist Raw records.
+            self._persist(
+                entity=entity,
+                records=new_records
+            )
+
+            # 7. Update checkpoint.
+            self._update_checkpoint(
+                entity=entity,
+                records=new_records,
+                previous_checkpoint=checkpoint
+            )
+
+            logger.info(
+                "Incremental checkpoint updated | Entity=%s",
+                entity
+            )
+
+            duration = (
+                time.perf_counter() - start_time
+            )
+
+            logger.info(
+                "Incremental ingestion completed | "
+                "Entity=%s | Status=SUCCESS | "
+                "Retrieved=%d | Persisted=%d | "
+                "Duration=%.2fs",
+                entity,
+                retrieved_count,
+                new_records_count,
+                duration
+            )
+
+        except Exception:
+
+            duration = (
+                time.perf_counter() - start_time
+            )
+
+            logger.exception(
+                "Incremental ingestion failed | "
+                "Entity=%s | Status=FAILED | "
+                "Duration=%.2fs",
+                entity,
+                duration
+            )
+
+            raise
 
     def run_issues(self) -> None:
 
@@ -1084,17 +1213,47 @@ class ResourcesPipeline:
     # ==================================================
 
     def run(self) -> None:
+        """
+        Executes all GitHub resource pipelines.
+        """
 
-        print(
-            "\n=== GITHUB RESOURCES PIPELINE ==="
+        start_time = time.perf_counter()
+
+        logger.info(
+            "GitHub Resources Pipeline started | "
+            "Owner=%s | Repository=%s",
+            self.owner,
+            self.repository
         )
 
-        self.run_repositories()
+        try:
 
-        self.run_issues()
+            self.run_repositories()
 
-        self.run_pull_requests()
+            self.run_issues()
 
-        print(
-            "\nResources pipeline completed successfully."
-        )
+            self.run_pull_requests()
+
+            duration = (
+                time.perf_counter() - start_time
+            )
+
+            logger.info(
+                "GitHub Resources Pipeline completed | "
+                "Status=SUCCESS | Duration=%.2fs",
+                duration
+            )
+
+        except Exception:
+
+            duration = (
+                time.perf_counter() - start_time
+            )
+
+            logger.error(
+                "GitHub Resources Pipeline failed | "
+                "Status=FAILED | Duration=%.2fs",
+                duration
+            )
+
+            raise
