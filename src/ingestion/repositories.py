@@ -1,6 +1,7 @@
 from typing import Any
 
 from src.api.client import GitHubClient
+from src.api.pagination import GitHubPaginator
 
 
 class RepositoriesIngestion:
@@ -10,9 +11,11 @@ class RepositoriesIngestion:
 
     def __init__(
         self,
-        client: GitHubClient
+        client: GitHubClient,
+        paginator: GitHubPaginator
     ) -> None:
         self.client = client
+        self.paginator = paginator
 
     def get_repository(
         self,
@@ -21,13 +24,6 @@ class RepositoriesIngestion:
     ) -> dict[str, Any]:
         """
         Retrieves metadata for a specific GitHub repository.
-
-        Args:
-            owner: Repository owner.
-            repository: Repository name.
-
-        Returns:
-            dict[str, Any]: Repository metadata returned by GitHub.
         """
         endpoint = f"/repos/{owner}/{repository}"
 
@@ -35,6 +31,26 @@ class RepositoriesIngestion:
             endpoint=endpoint
         )
 
-        data = response.json()
+        return response.json()
 
-        return data
+    def get_repositories(
+        self,
+        params: dict[str, Any] = None
+    ) -> list[dict[str, Any]]:
+        """
+        Retrieves repositories accessible to the
+        authenticated GitHub user using pagination.
+        """
+        endpoint = "/user/repos"
+
+        repositories = []
+
+        pages = self.paginator.paginate(
+            endpoint=endpoint,
+            params=params
+        )
+
+        for page in pages:
+            repositories.extend(page)
+
+        return repositories
