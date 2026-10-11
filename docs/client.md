@@ -1,24 +1,22 @@
-# Cliente da GitHub REST API
+
+# Cliente HTTP e Recuperação de Falhas
 
 ## Sobre
 
-Este documento descreve a implementação e o comportamento do `GitHubClient`, cliente HTTP responsável pela comunicação entre o pipeline e a GitHub REST API.
+Este documento descreve o cliente HTTP utilizado pelo GitHub API Data Pipeline.
 
-O cliente centraliza as principais responsabilidades relacionadas à comunicação com a API, incluindo:
+O componente foi desenvolvido para centralizar a comunicação com a API REST do GitHub, garantindo reutilização, padronização e maior confiabilidade nas requisições.
 
-- autenticação;
-- parâmetros de consulta;
-- timeout das requisições;
-- tratamento de respostas HTTP;
-- exceções customizadas;
-- mecanismos de retry;
-- exponential backoff;
-- tratamento de rate limit;
-- header `Retry-After`;
-- header `X-RateLimit-Reset`;
-- geração de logs durante tentativas de retry.
+O cliente implementa:
 
-O principal objetivo é fornecer uma camada HTTP reutilizável e resiliente para os módulos de ingestão, evitando que cada recurso do GitHub tenha que implementar individualmente autenticação, tratamento de erros, timeout e estratégias de retry.
+- Autenticação.
+- Configuração de timeout.
+- Validação de URLs.
+- Tratamento de respostas HTTP.
+- Retry.
+- Backoff exponencial.
+- Tratamento de rate limits.
+- Registro de logs operacionais.
 
 ---
 
@@ -30,1035 +28,308 @@ O cliente está implementado em:
 src/api/client.py
 ```
 
-Ele é utilizado pelos componentes de ingestão e paginação sempre que uma comunicação com a GitHub REST API é necessária.
+A classe principal é:
 
-O cliente possui dependências dos seguintes componentes:
+```python
+GitHubClient
+```
+
+O módulo utiliza os cabeçalhos de autenticação disponibilizados por:
 
 ```text
 src/api/auth.py
-src/utils/exceptions.py
-src/utils/logger.py
 ```
-
-Cada componente possui uma responsabilidade específica:
-
-| Componente | Responsabilidade |
-|---|---|
-| `auth.py` | Criação dos headers de autenticação e configuração da GitHub API |
-| `client.py` | Execução das requisições HTTP e controle de resiliência |
-| `exceptions.py` | Definição das exceções customizadas da aplicação |
-| `logger.py` | Configuração e persistência dos logs |
 
 ---
 
-# 2. Responsabilidades do cliente
+# 2. Responsabilidades
 
-O `GitHubClient` funciona como a camada central de comunicação entre o pipeline e o GitHub.
+O cliente HTTP é responsável por executar requisições e tratar falhas de comunicação.
 
-Suas responsabilidades podem ser resumidas da seguinte forma:
+As regras de negócio de cada recurso permanecem nos módulos de ingestão.
 
-```text
-Ingestion / Pagination
-         |
-         v
-    GitHubClient
-         |
-         +-- Construir URL
-         +-- Adicionar autenticação
-         +-- Enviar requisição HTTP
-         +-- Aplicar timeout
-         +-- Avaliar resposta
-         |
-         +-- Sucesso --------------------> Retornar resposta
-         |
-         +-- Falha temporária -----------> Retry
-         |
-         +-- Rate Limit -----------------> Aguardar + Retry
-         |
-         +-- Falha permanente -----------> Lançar exceção
-         |
-         +-- Evento de retry ------------> Registrar log
-```
-
-Com essa separação, os módulos de ingestão não precisam conhecer os detalhes relacionados à comunicação HTTP.
-
-Por exemplo, o componente responsável pela ingestão de commits precisa apenas informar qual endpoint deve ser consultado. Ele não precisa implementar autenticação, timeout, retry, exponential backoff, rate limit ou classificação de erros HTTP.
+Essa separação permite reutilizar o mesmo cliente para commits, repositories, issues e pull requests.
 
 ---
 
 # 3. Configuração
 
-O cliente possui a seguinte configuração:
+A classe `GitHubClient` possui parâmetros de configuração para controle das requisições.
+
+| Parâmetro | Valor padrão | Descrição |
+|---|---|---|
+| base_url | URL base configurada | Endereço base da API |
+| timeout | 30 segundos | Tempo máximo de espera da requisição |
+| max_retries | 3 | Número de tentativas adicionais |
+| backoff_factor | 1.0 | Fator de espera exponencial |
+| max_retry_wait | 60 segundos | Tempo máximo permitido por espera |
+
+O cliente valida os parâmetros de configuração para evitar valores inválidos.
+
+---
+
+# 4. Métodos principais
+
+## 4.1 get()
+
+Executa uma requisição GET utilizando um endpoint relativo à URL base.
+
+Exemplo de utilização:
 
 ```python
-GitHubClient(
-    base_url=None,
-    timeout=30,
-    max_retries=3,
-    backoff_factor=1.0
+response = client.get(
+    endpoint="/user"
 )
 ```
 
-## 3.1 `base_url`
+O método aceita parâmetros de consulta.
 
-Define a URL base da GitHub REST API.
+## 4.2 get_url()
 
-Quando nenhum valor é informado diretamente na criação do cliente, é utilizada a variável de ambiente:
+Executa uma requisição GET utilizando uma URL completa.
 
-```text
-GITHUB_BASE_URL
-```
+Esse método é especialmente útil para paginação, quando a API fornece a URL da próxima página no cabeçalho `Link`.
 
-Caso ela também não esteja disponível, o valor padrão é:
+Antes da requisição, a URL é validada.
 
-```text
-https://api.github.com
-```
+## 4.3 _request()
 
-O caractere `/` ao final da URL é removido quando necessário para evitar URLs malformadas durante a concatenação com os endpoints.
+Centraliza a execução HTTP.
 
----
+Esse método coordena:
 
-## 3.2 `timeout`
-
-Define o tempo máximo permitido para uma requisição HTTP antes que ela seja considerada como timeout.
-
-Valor padrão:
-
-```text
-30 segundos
-```
-
-Um timeout não encerra imediatamente a execução do pipeline.
-
-Antes disso, o cliente aplica a estratégia de retry configurada.
+1. Validação da URL.
+2. Envio da requisição.
+3. Verificação da resposta.
+4. Identificação de falhas recuperáveis.
+5. Cálculo do tempo de espera.
+6. Nova tentativa, quando permitida.
+7. Retorno da resposta ou propagação da exceção.
 
 ---
 
-## 3.3 `max_retries`
+# 5. Timeout
 
-Define a quantidade máxima de novas tentativas permitidas após a requisição inicial.
+O timeout define o tempo máximo de espera configurado para uma requisição.
 
-Valor padrão:
+Quando ocorre uma exceção de timeout, o cliente pode realizar novas tentativas.
 
-```text
-3 retries
-```
+Se todas as tentativas forem esgotadas, a falha é propagada como uma exceção específica.
 
-Portanto:
-
-```text
-1 requisição inicial
-        +
-3 retries
-        =
-Máximo de 4 requisições
-```
-
-Caso a falha permaneça após todas as tentativas, a exceção correspondente é lançada.
+Essa estratégia evita que falhas transitórias interrompam imediatamente o processamento.
 
 ---
 
-## 3.4 `backoff_factor`
+# 6. Retry
 
-Define o fator utilizado no cálculo do exponential backoff entre as tentativas.
+Retry representa a repetição de uma requisição após uma falha potencialmente temporária.
 
-Valor padrão:
+O cliente permite novas tentativas para:
 
-```text
-1.0
-```
+- Timeout.
+- Falhas de conexão.
+- HTTP 500.
+- HTTP 502.
+- HTTP 503.
+- HTTP 504.
+- HTTP 429.
+- HTTP 403 quando identificado como rate limit.
 
-O tempo de espera é calculado utilizando:
+O parâmetro `max_retries` representa tentativas adicionais.
 
-```text
-backoff_factor * (2 ** attempt)
-```
-
-Com a configuração padrão:
-
-```text
-Tentativa 0 -> 1 segundo
-Tentativa 1 -> 2 segundos
-Tentativa 2 -> 4 segundos
-```
-
----
-
-# 4. Autenticação
-
-A autenticação não é implementada diretamente dentro do `GitHubClient`.
-
-Os headers são fornecidos pelo componente:
+Por exemplo:
 
 ```text
-src/api/auth.py
-```
-
-Durante a inicialização, o cliente cria uma sessão reutilizável:
-
-```python
-self.session = requests.Session()
-```
-
-e adiciona os headers de autenticação:
-
-```python
-self.session.headers.update(
-    get_auth_headers()
-)
-```
-
-O token de acesso é obtido por variável de ambiente, evitando que credenciais sejam armazenadas diretamente no código-fonte.
-
-A sessão também permite reutilizar a configuração HTTP entre diferentes requisições realizadas pelo pipeline.
-
----
-
-# 5. Métodos de requisição
-
-O cliente disponibiliza dois métodos públicos para execução de requisições.
-
-## 5.1 `get()`
-
-O método `get()` recebe um endpoint da GitHub REST API.
-
-Exemplo:
-
-```python
-client.get(
-    endpoint="/repos/owner/repository"
-)
-```
-
-O endpoint é combinado com a URL base configurada.
-
-Exemplo:
-
-```text
-Base URL:
-https://api.github.com
-
-Endpoint:
-/repos/owner/repository
-
-URL final:
-https://api.github.com/repos/owner/repository
-```
-
-O método também aceita parâmetros opcionais:
-
-```python
-client.get(
-    endpoint="/user/repos",
-    params={
-        "per_page": 100,
-        "sort": "updated"
-    }
-)
-```
-
----
-
-## 5.2 `get_url()`
-
-O método `get_url()` recebe uma URL completa em vez de um endpoint.
-
-Exemplo:
-
-```python
-client.get_url(next_url)
-```
-
-Esse método é utilizado principalmente pelo componente de paginação, pois o GitHub pode fornecer a URL da próxima página por meio do header HTTP `Link`.
-
-Tanto `get()` quanto `get_url()` delegam a execução efetiva da requisição para o método interno `_request()`.
-
----
-
-# 6. Fluxo de uma requisição
-
-O método `_request()` concentra a principal lógica de resiliência do cliente.
-
-O fluxo simplificado é:
-
-```text
-Requisição HTTP
-      |
-      v
-requests.Session.get()
-      |
-      +--------------------------+
-      |                          |
-      v                          v
-   Resposta                  Exceção
-      |                          |
-      |                  +-------+-------+
-      |                  |               |
-      |               Timeout       ConnectionError
-      |                  |               |
-      |                  +-------+-------+
-      |                          |
-      |                          v
-      |                 Exponential Backoff
-      |                          |
-      |                         Log
-      |                          |
-      |                        Retry
-      |
-      v
-Avaliar resposta HTTP
-      |
-      +-- Rate Limit -------> Espera -> Log -> Retry
-      |
-      +-- 500/502/503 ------> Backoff -> Log -> Retry
-      |
-      +-- Outros erros -----> Exceção customizada
-      |
-      +-- 2xx --------------> Retornar resposta
-```
-
----
-
-# 7. Tratamento das respostas HTTP
-
-As respostas HTTP são classificadas pelo método `_handle_response()`.
-
-## 7.1 Respostas de sucesso
-
-Qualquer status entre:
-
-```text
-200-299
-```
-
-é considerado bem-sucedido.
-
-A resposta é retornada ao componente responsável pela chamada para que os dados possam ser processados.
-
----
-
-## 7.2 HTTP 400
-
-Um `400 Bad Request` representa uma requisição inválida.
-
-Exceção utilizada:
-
-```text
-BadRequestError
-```
-
-Exemplo:
-
-```text
-GitHub API error [400]: Invalid request.
-```
-
-Esse tipo de erro não gera retry.
-
----
-
-## 7.3 HTTP 401
-
-Um `401 Unauthorized` representa falha de autenticação.
-
-Exceção:
-
-```text
-AuthenticationError
-```
-
-Exemplo:
-
-```text
-GitHub API error [401]: Authentication failed.
-```
-
-Esse erro também não gera retry automático.
-
----
-
-## 7.4 HTTP 403
-
-O status `403 Forbidden` pode representar duas situações diferentes.
-
-O cliente verifica o header:
-
-```text
-X-RateLimit-Remaining
-```
-
-Quando:
-
-```text
-X-RateLimit-Remaining = 0
-```
-
-a resposta é interpretada como rate limit.
-
-Caso contrário, ela é tratada como problema de acesso ou autorização.
-
-As possíveis exceções são:
-
-```text
-RateLimitError
-AuthenticationError
-```
-
----
-
-## 7.5 HTTP 404
-
-Um `404 Not Found` indica que o recurso solicitado não foi encontrado.
-
-Exceção:
-
-```text
-ResourceNotFoundError
-```
-
-Exemplo:
-
-```text
-GitHub API error [404]: Resource not found.
-```
-
-O cliente não realiza retry para esse status.
-
----
-
-## 7.6 HTTP 429
-
-Um `429 Too Many Requests` é interpretado como rate limit.
-
-Antes de lançar uma exceção, o cliente tenta determinar quanto tempo deve aguardar e executa novamente a requisição.
-
-Caso todas as tentativas sejam esgotadas, é lançada:
-
-```text
-RateLimitError
-```
-
----
-
-## 7.7 Erros de servidor
-
-Os seguintes erros temporários de servidor são considerados elegíveis para retry:
-
-```text
-500
-502
-503
-```
-
-Eles estão definidos em:
-
-```python
-RETRYABLE_STATUS_CODES = {
-    500,
-    502,
-    503,
-}
-```
-
-Para esses erros, o cliente utiliza exponential backoff antes de realizar uma nova tentativa.
-
-Caso o número máximo de retries seja atingido, é lançada:
-
-```text
-ServerError
-```
-
----
-
-# 8. Estratégia de Retry
-
-Retries são realizados somente para condições consideradas temporárias ou potencialmente recuperáveis.
-
-| Condição | Retry |
-|---|---|
-| HTTP 500 | Sim |
-| HTTP 502 | Sim |
-| HTTP 503 | Sim |
-| HTTP 429 | Sim |
-| HTTP 403 causado por rate limit | Sim |
-| Timeout | Sim |
-| Connection error | Sim |
-| HTTP 400 | Não |
-| HTTP 401 | Não |
-| HTTP 403 sem rate limit | Não |
-| HTTP 404 | Não |
-
-Essa distinção evita novas tentativas desnecessárias para erros que dificilmente serão resolvidos sem alguma alteração na requisição, nas permissões ou nas credenciais.
-
----
-
-# 9. Exponential Backoff
-
-Falhas temporárias utilizam exponential backoff.
-
-A fórmula utilizada é:
-
-```text
-wait_time = backoff_factor * (2 ** attempt)
-```
-
-Considerando:
-
-```text
-backoff_factor = 1.0
 max_retries = 3
 ```
 
-o fluxo será:
+Permite até quatro tentativas no total:
 
 ```text
-Requisição inicial
-       |
-       X
-       |
-   aguarda 1s
-       |
-    Retry 1
-       |
-       X
-       |
-   aguarda 2s
-       |
-    Retry 2
-       |
-       X
-       |
-   aguarda 4s
-       |
-    Retry 3
+Tentativa inicial
+      |
+      v
+Retry 1
+      |
+      v
+Retry 2
+      |
+      v
+Retry 3
 ```
 
-Esse comportamento evita que o cliente envie repetidamente novas requisições de forma imediata após uma falha temporária.
-
-A lógica está centralizada no método:
-
-```text
-_wait_before_retry()
-```
+A execução termina quando uma resposta válida é recebida ou quando as tentativas são esgotadas.
 
 ---
 
-# 10. Tratamento de Timeout
+# 7. Backoff exponencial
 
-Todas as requisições utilizam o timeout configurado no cliente:
+O backoff exponencial aumenta progressivamente o intervalo entre tentativas.
 
-```python
-self.session.get(
-    url=url,
-    params=params,
-    timeout=self.timeout
-)
-```
+A estratégia reduz a pressão sobre a API durante falhas temporárias.
 
-Quando a biblioteca `requests` lança:
+O tempo de espera segue uma progressão baseada no fator configurado.
 
-```text
-requests.exceptions.Timeout
-```
+Exemplo com fator 1:
 
-o cliente verifica se ainda existem tentativas disponíveis.
+| Retry | Espera |
+|---|---|
+| 1 | 1 segundo |
+| 2 | 2 segundos |
+| 3 | 4 segundos |
 
-O fluxo é:
-
-```text
-Timeout
-   |
-   v
-Verificar limite de retries
-   |
-   +-- Limite atingido --> RequestTimeoutError
-   |
-   +-- Retry disponível
-             |
-             v
-      Calcular backoff
-             |
-             v
-      Registrar log
-             |
-             v
-          Aguardar
-             |
-             v
-           Retry
-```
-
-Caso todas as tentativas falhem:
-
-```text
-RequestTimeoutError
-```
-
-é lançada.
+O intervalo é limitado pelo parâmetro `max_retry_wait`.
 
 ---
 
-# 11. Tratamento de Erros de Conexão
+# 8. Tratamento de rate limits
 
-Falhas de conexão são tratadas separadamente das respostas HTTP.
+A API do GitHub pode limitar temporariamente a quantidade ou a frequência das requisições.
 
-Quando ocorre:
+O cliente identifica cenários relacionados a:
 
-```text
-requests.exceptions.ConnectionError
-```
+- Limites primários.
+- Limites secundários.
+- HTTP 429.
+- HTTP 403 com indicadores de limitação.
 
-o cliente aplica a mesma estratégia de exponential backoff utilizada para erros temporários de servidor.
+## 8.1 Cálculo da espera
 
-Fluxo:
+O cliente considera as informações retornadas pela API.
 
-```text
-ConnectionError
-       |
-       v
-Verificar limite de retries
-       |
-       +-- Limite atingido --> GitHubConnectionError
-       |
-       +-- Retry disponível
-                  |
-                  v
-          Exponential Backoff
-                  |
-                  v
-                 Log
-                  |
-                  v
-                Retry
-```
+A prioridade é:
 
-Se todas as tentativas falharem, é lançada:
+1. Cabeçalho `Retry-After`.
+2. Cabeçalho `X-RateLimit-Reset`.
+3. Backoff exponencial.
 
-```text
-GitHubConnectionError
-```
+Quando a espera necessária ultrapassa `max_retry_wait`, o cliente gera uma exceção específica.
+
+Isso impede períodos de espera excessivos em uma única tentativa.
+
+## 8.2 Diferenciação de HTTP 403
+
+Nem toda resposta HTTP 403 indica limitação de requisições.
+
+O cliente utiliza cabeçalhos e mensagens retornadas pela API para diferenciar um bloqueio de acesso de um cenário de rate limit.
+
+Uma resposta HTTP 403 sem indicadores de limitação não deve ser repetida automaticamente.
 
 ---
 
-# 12. Tratamento de Rate Limit
+# 9. Tratamento de exceções
 
-O rate limit exige uma estratégia diferente de espera, pois a resposta da API pode fornecer informações indicando quando uma nova requisição deve ser realizada.
-
-O cliente identifica rate limit nas seguintes situações:
-
-```text
-HTTP 429
-```
-
-ou:
-
-```text
-HTTP 403
-+
-X-RateLimit-Remaining = 0
-```
-
-A prioridade para determinar o tempo de espera é:
-
-```text
-1. Retry-After
-2. X-RateLimit-Reset
-3. Exponential Backoff
-```
-
-Essa lógica está implementada em:
-
-```text
-_get_rate_limit_wait_time()
-```
-
----
-
-## 12.1 `Retry-After`
-
-Quando a resposta contém:
-
-```text
-Retry-After
-```
-
-o valor é interpretado como a quantidade de segundos que o cliente deve aguardar.
-
-Exemplo:
-
-```text
-HTTP 429
-Retry-After: 5
-```
-
-Resultado:
-
-```text
-Aguardar 5 segundos
-        |
-        v
-Executar novo request
-```
-
-Na implementação atual, `Retry-After` possui a maior prioridade para determinação do tempo de espera.
-
----
-
-## 12.2 `X-RateLimit-Reset`
-
-Quando `Retry-After` não está disponível, o cliente procura:
-
-```text
-X-RateLimit-Reset
-```
-
-O valor é interpretado como um Unix timestamp.
-
-O tempo de espera é calculado como:
-
-```text
-X-RateLimit-Reset - horário atual
-```
-
-Exemplo:
-
-```text
-Horário atual:
-1000
-
-X-RateLimit-Reset:
-1010
-
-Tempo de espera:
-10 segundos
-```
-
-Para evitar valores negativos, o cliente utiliza:
-
-```text
-max(tempo_calculado, 0)
-```
-
----
-
-## 12.3 Fallback do Rate Limit
-
-Caso nem:
-
-```text
-Retry-After
-```
-
-nem:
-
-```text
-X-RateLimit-Reset
-```
-
-possam ser utilizados, o cliente utiliza exponential backoff como fallback.
-
-Exemplo:
-
-```text
-HTTP 429
-    |
-    | Retry-After indisponível
-    |
-    | X-RateLimit-Reset indisponível
-    |
-    v
-Exponential Backoff
-    |
-    +-- 1 segundo
-    +-- 2 segundos
-    +-- 4 segundos
-```
-
-Dessa forma, o cliente continua possuindo uma estratégia de retry mesmo quando a API não informa explicitamente quanto tempo deve ser aguardado.
-
----
-
-# 13. Logging
-
-Os eventos relacionados aos retries são registrados utilizando:
-
-```text
-src/utils/logger.py
-```
-
-O cliente utiliza o nível:
-
-```text
-WARNING
-```
-
-para registrar:
-
-```text
-Erros temporários de servidor
-Timeout
-Erros de conexão
-Rate limit
-```
-
-Exemplo de erro temporário de servidor:
-
-```text
-WARNING | src.api.client | GitHub API temporary server error. HTTP 503. Retry 1/3 in 1.00 seconds.
-```
-
-Exemplo de timeout:
-
-```text
-WARNING | src.api.client | GitHub API request timeout. Retry 1/3 in 1.00 seconds.
-```
-
-Exemplo de erro de conexão:
-
-```text
-WARNING | src.api.client | GitHub API connection error. Retry 1/3 in 1.00 seconds.
-```
-
-Exemplo de rate limit:
-
-```text
-WARNING | src.api.client | GitHub API rate limit reached. HTTP 429. Retry 1/3 in 5.00 seconds.
-```
-
-Os logs são persistidos em:
-
-```text
-logs/github_api.log
-```
-
-Informações sensíveis, como tokens de autenticação, não são incluídas nas mensagens de log.
-
----
-
-# 14. Exceções Customizadas
-
-O cliente utiliza exceções específicas da aplicação definidas em:
+As exceções personalizadas estão definidas em:
 
 ```text
 src/utils/exceptions.py
 ```
 
-A estrutura atual inclui:
+| Exceção | Responsabilidade |
+|---|---|
+| GitHubAPIError | Exceção base |
+| BadRequestError | Requisição inválida |
+| AuthenticationError | Problema de autenticação ou autorização |
+| ResourceNotFoundError | Recurso não encontrado |
+| RateLimitError | Limitação de requisições |
+| ServerError | Erro de servidor |
+| RequestTimeoutError | Timeout |
+| GitHubConnectionError | Falha de conexão |
 
-```text
-GitHubAPIError
-|
-+-- BadRequestError
-|
-+-- AuthenticationError
-|
-+-- ResourceNotFoundError
-|
-+-- RateLimitError
-|
-+-- ServerError
-|
-+-- RequestTimeoutError
-|
-+-- GitHubConnectionError
-```
-
-O uso dessas exceções permite que outros componentes do pipeline diferenciem os diferentes tipos de falha sem depender diretamente das exceções internas da biblioteca `requests` ou da análise manual dos status HTTP.
+A utilização de exceções específicas facilita a identificação da origem dos problemas.
 
 ---
 
-# 15. Fluxo de Resiliência
+# 10. Validação de URLs
 
-O comportamento geral do cliente pode ser representado da seguinte maneira:
+O cliente valida URLs completas antes de executar requisições.
 
-```text
-                         REQUEST
-                            |
-                            v
-                     GitHub REST API
-                            |
-          +-----------------+-----------------+
-          |                                   |
-          v                                   v
-    Exceção de rede                         Resposta
-          |                                   |
-     +----+----+                   +----------+----------+
-     |         |                   |                     |
-  Timeout   Connection          Rate Limit          Outros HTTP
-     |         |                   |                     |
-     +----+----+             +-----+-----+         +-----+-----+
-          |                  |           |         |           |
-          v              Retry-After   Reset      2xx       4xx/5xx
-      Backoff                |           |         |           |
-          |                  +-----+-----+         |      +----+----+
-          v                        |               |      |         |
-         Log                       v               |    5xx      Outros
-          |                     Aguardar           |      |         |
-          v                        |               |   Backoff   Exceção
-        Retry                     Log              |      |
-                                   |               |     Log
-                                   v               |      |
-                                 Retry             |    Retry
-                                                   |
-                                                   v
-                                                Retorno
-```
+As verificações incluem:
+
+- Utilização de HTTPS.
+- Correspondência com o host configurado.
+- Ausência de credenciais embutidas na URL.
+- Ausência de fragmentos.
+- Respeito ao caminho base configurado.
+
+Essa proteção é importante porque URLs de paginação são obtidas a partir de respostas externas.
+
+O cliente também desabilita o acompanhamento automático de redirecionamentos.
 
 ---
 
-# 16. Validação
+# 11. Observabilidade
 
-Os mecanismos de resiliência foram validados utilizando respostas HTTP e exceções simuladas.
+O cliente registra eventos relevantes durante a comunicação HTTP.
 
-Foram testados os seguintes cenários:
+Os logs incluem:
 
-```text
-1. HTTP 503 temporário seguido de HTTP 200
-2. Timeout seguido de HTTP 200
-3. ConnectionError seguido de HTTP 200
-4. HTTP 429 com Retry-After seguido de HTTP 200
-5. HTTP 403 com X-RateLimit-Remaining = 0
-   e X-RateLimit-Reset seguido de HTTP 200
-6. HTTP 429 sem headers de tempo para rate limit
-7. HTTP 503 persistente até atingir o máximo de retries
-8. HTTP 429 persistente até atingir o máximo de retries
-```
+- Tentativas de recuperação.
+- Código HTTP relacionado à falha.
+- Tempo de espera.
+- Recuperação bem-sucedida.
+- Esgotamento de tentativas.
+- Excesso do limite máximo de espera.
 
-Os seguintes comportamentos foram validados:
+Exemplo:
 
 ```text
-Server Error:
-503 -> 503 -> 200
-Espera: 1s -> 2s
+WARNING | Retryable HTTP response | HTTP=503 | Retry=1/2 | Wait=1.00s
 
-Timeout:
-Timeout -> Timeout -> 200
-Espera: 1s -> 2s
-
-Connection:
-ConnectionError -> ConnectionError -> 200
-Espera: 1s -> 2s
-
-Retry-After:
-429 -> 200
-Espera: 5s
-
-X-RateLimit-Reset:
-403 -> 200
-Espera calculada: 10s
-
-Rate Limit Fallback:
-429 -> 429 -> 200
-Espera: 1s -> 2s
+INFO | GitHub API request recovered | HTTP=200 | Retries=1
 ```
 
-O comportamento de limite máximo de retries também foi validado.
-
-Com:
-
-```text
-max_retries = 3
-```
-
-a quantidade máxima de requisições é:
-
-```text
-1 requisição inicial + 3 retries = 4 requisições
-```
-
-Após a última tentativa sem sucesso, a exceção correspondente é lançada.
+Os logs ajudam a distinguir falhas transitórias de falhas definitivas.
 
 ---
 
-# 17. Capacidades Atuais
+# 12. Testes de recuperação
 
-A implementação atual do `GitHubClient` possui:
+Os testes estão implementados em:
 
 ```text
-Autenticação                  Implementado
-Parâmetros de consulta        Implementado
-Sessão HTTP reutilizável      Implementado
-Construção de URL             Implementado
-Requisição por URL completa   Implementado
-
-Request timeout               Implementado
-Classificação de erros HTTP   Implementado
-Exceções customizadas         Implementado
-
-Retry 500/502/503             Implementado
-Retry de timeout              Implementado
-Retry de conexão              Implementado
-Exponential backoff           Implementado
-Limite máximo de retries      Implementado
-
-Rate limit HTTP 429           Implementado
-Rate limit HTTP 403           Implementado
-Retry-After                   Implementado
-X-RateLimit-Reset             Implementado
-Fallback de rate limit        Implementado
-
-Logging de retries            Implementado
+notebooks/test_client_recovery.py
 ```
+
+Foram validados os seguintes cenários:
+
+| Cenário | Resultado |
+|---|---|
+| HTTP 401 sem retry | OK |
+| HTTP 403 sem rate limit | OK |
+| HTTP 503 com recuperação | OK |
+| Timeout com tentativas esgotadas | OK |
+| Rate limit secundário com recuperação | OK |
+| Espera superior ao máximo permitido | OK |
+| Bloqueio de URL de paginação insegura | OK |
+| Rejeição de configuração inválida | OK |
+
+Os testes utilizam simulações de respostas e falhas, evitando depender de erros reais da API.
+
+Após essas verificações, o cliente também foi validado em uma execução integrada do pipeline.
 
 ---
 
-# 18. Papel no Pipeline
+# 13. Limitações
 
-O cliente fornece a base de comunicação utilizada pela camada de ingestão.
+O cliente utiliza uma estratégia de recuperação baseada em regras definidas.
 
-O fluxo atual pode ser representado como:
+Não implementa:
 
-```text
-GitHub REST API
-       ^
-       |
- GitHubClient
-       ^
-       |
- +-----+------------------+
- |        |        |      |
-Repository Commits Pulls Issues
-              ^
-              |
-        GitHubPaginator
-```
+- Circuit breaker.
+- Fila persistente de requisições.
+- Controle distribuído de rate limit.
+- Cache HTTP persistente.
+- Métricas centralizadas.
+- Alertas automáticos.
 
-Os componentes de ingestão são responsáveis por definir quais recursos do GitHub devem ser consultados.
-
-O `GitHubClient` é responsável por garantir que essas requisições sejam realizadas de forma centralizada e resiliente.
-
-Essa separação permite que as próximas etapas do pipeline sejam desenvolvidas sem duplicar regras de comunicação HTTP, autenticação ou tratamento de falhas.
+Esses recursos podem ser incorporados em evoluções futuras.
 
 ---
 
-# 19. Próximas Etapas
+# 14. Documentos relacionados
 
-Com o cliente HTTP e a camada de resiliência concluídos, as próximas etapas do desenvolvimento serão:
-
-```text
-GitHub REST API
-       |
-       v
-GitHubClient                  Concluído
-       |
-       v
-Ingestion                     Concluído
-       |
-       v
-Persistência Raw / JSON       Próxima etapa
-       |
-       v
-Metadados de ingestão
-       |
-       v
-Estratégia incremental
-       |
-       v
-Processamento
-       |
-       v
-Silver / Dados estruturados
-```
-
-O `GitHubClient` continuará sendo o componente central de comunicação HTTP, enquanto as próximas etapas serão responsáveis pela persistência dos dados, controle de incrementalidade, transformação, validação e armazenamento estruturado.
+- [README](../README.md)
+- [Arquitetura](architecture.md)
+- [Exploração da API](api_exploration.md)
+- [Estratégia Incremental](incremental_strategy.md)
