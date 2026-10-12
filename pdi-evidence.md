@@ -1,4 +1,3 @@
-
 # PDI — Evidências de Desenvolvimento Técnico
 
 ## Hard Skills — API: Integração com Web APIs
