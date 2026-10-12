@@ -37,15 +37,15 @@ secrets.json
 # Data
 # ============================================================
 
-# Raw and processed data should not be versioned
-data/raw/*
-data/silver/*
-data/processed/*
+# Generated JSON data should not be versioned
+data/**/*.json
 
-# Keep directory structure
-!data/raw/.gitkeep
-!data/silver/.gitkeep
-!data/processed/.gitkeep
+# Keep directory structure markers
+!data/**/.gitkeep
+
+!data/raw/*.md
+!data/silver/*.md
+!data/processed/*.md
 
 # Common data files
 *.parquet
@@ -54,7 +54,7 @@ data/processed/*
 # Logs
 # ============================================================
 
-logs/*
+# logs/*
 !logs/.gitkeep
 
 *.log
@@ -108,7 +108,7 @@ Desktop.ini
 # ============================================================
 
 # Local checkpoints used for incremental ingestion
-checkpoints/
+/checkpoints/
 *.checkpoint
 
 # Local execution artifacts
